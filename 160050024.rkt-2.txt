@@ -1,0 +1,125 @@
+#lang racket
+(require "declarations.rkt")
+(provide buildTree)
+(provide calcForces)
+(provide moveparticles)
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(define (buildTree initialArea particles)
+  
+  (define (region ptcl)
+    ;; region returns the quadrant in which the particle is
+    (let* ((x (vec-x (particle-posn ptcl)))
+           (y (vec-y (particle-posn ptcl)))
+           (x-c (/ (+ (bbox-llx initialArea) (bbox-rux initialArea)) 2))
+           (y-c (/ (+ (bbox-lly initialArea) (bbox-ruy initialArea)) 2)))
+      (cond ((and (>= x x-c) (>= y y-c)) 0)
+            ((and (< x x-c) (>= y y-c)) 1)
+            ((and (>= x x-c)) (< y y-c) 3)
+            (else 2))))
+
+  
+(define (com particles)
+  ;; com calculates the position of centre of mass of list of particles
+  (if (null? particles) '()
+      (let* ((m (sum (lc (particle-mass pt) : pt <- particles)))
+             (x (sum (lc (* (particle-mass pt) (vec-x (particle-posn pt))) : pt <- particles)))
+             (y (sum (lc (* (particle-mass pt) (vec-y (particle-posn pt))) : pt <- particles))))
+        (vec (* (/ 1 m) x) (* (/ 1 m) y)))))
+            
+  
+  (cond ((null? particles) (gnode 0 (vec 0 0) '()))
+        ;; single particle is transformed to a node which has null subtrees
+        ((singleton particles) (gnode (particle-mass (car particles))
+                                      (particle-posn (car particles))
+                                      '()))
+                                                    
+        (else 
+         (let* ((c (com particles))
+                (l0 (lc x : x <- particles @ (= (region x) 0)))
+                (l1 (lc x : x <- particles @ (= (region x) 1)))
+                (l2 (lc x : x <- particles @ (= (region x) 2)))
+                (l3 (lc x : x <- particles @ (= (region x) 3)))
+                (x-c (/ (+ (bbox-llx initialArea) (bbox-rux initialArea)) 2))
+                (y-c (/ (+ (bbox-lly initialArea) (bbox-ruy initialArea)) 2)))
+
+           (gnode (sum (lc (particle-mass x) : x <- particles))
+                  c
+                  (list 
+                   (buildTree (bbox (bbox-llx initialArea) y-c x-c (bbox-ruy initialArea)) l1)
+                   (buildTree (bbox x-c y-c (bbox-rux initialArea) (bbox-ruy initialArea)) l0)
+                   (buildTree (bbox (bbox-llx initialArea) (bbox-lly initialArea) x-c y-c) l2)
+                   (buildTree (bbox x-c (bbox-lly initialArea) (bbox-rux initialArea) y-c) l3)))))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+          
+(define (calcForces initialArea tree particles)
+  
+  (define (helper pt tree ans i)
+    (if (null? tree) (vec 0 0)
+        (let* ((c (gnode-posn tree))
+               (d (dist (particle-posn pt) c))
+               ;; f = g m1 m2/ r^2
+               (f-x (if (= d 0) 0 (* (/ (* g (particle-mass pt) (gnode-mass tree)) (expt d 3))
+                                     (- (vec-x (gnode-posn tree)) (vec-x (particle-posn pt))))))
+               (f-y (if (= d 0) 0 (* (/ (* g (particle-mass pt) (gnode-mass tree)) (expt d 3))
+                                     (- (vec-y (gnode-posn tree)) (vec-y (particle-posn pt)))))))
+        
+          (cond ;; if the node is far, directly calculate the force.
+            ((> d (* theta (/ 1 i) (- (bbox-rux initialArea) (bbox-llx initialArea))))
+             (vec (+ f-x (vec-x ans)) (+ f-y (vec-y ans))))
+            ;; the below condition is for a particle, node is a particle if it has null subtrees
+            ((null? (gnode-subtrees tree)) (vec (+ f-x (vec-x ans)) (+ f-y (vec-y ans))))
+            ;; if the node is near, then check on it's subtrees. 
+            (else (vec (sum (lc (vec-x (helper pt t (vec 0 0) (* i 2))) : t <- (gnode-subtrees tree)))
+                       (sum (lc (vec-y (helper pt t (vec 0 0) (* i 2))) : t <- (gnode-subtrees tree)))))))))
+
+  
+  (define (dist x y)
+    ;; calculates the distance between two vectors
+    (let* ((a (vec-x x)) (b (vec-y x))
+                         (c (vec-x y)) (d (vec-y y))
+                         (e (- a c)) (f (- b d)))
+      (sqrt (+ (* e e) (* f f)))))
+    
+  (if (null? particles) '()      
+      (lc (helper pt tree (vec 0 0) 1) : pt <- particles)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define (moveparticles particles forces)
+  ;; helper calculates new positions for the particles tail recursively
+  (define (helper particles forces new-particles)
+    (if (null? particles) new-particles
+        (helper (cdr particles) (cdr forces)
+                (append new-particles
+                        (list (particle (particle-mass (car particles))
+                                        (new-pos (car particles) (car forces))
+                                        (new-vel (car particles) (car forces))))))))
+  ;; s = ut + 1/2 at^2
+  ;; for an individual particle
+  (define (new-pos pt force)
+    (vec (+ (vec-x (particle-posn pt))
+            (+ (* (vec-x (particle-velocity pt)) timeslice)
+               (* 0.5 (/ (vec-x force) (particle-mass pt))
+                  (* timeslice timeslice))))
+         (+ (vec-y (particle-posn pt))
+            (+ (* (vec-y (particle-velocity pt)) timeslice)
+               (* 0.5 (/ (vec-y force) (particle-mass pt))
+                  (* timeslice timeslice))))))
+  ;; v = u + at
+  ;; for an individual particle
+  (define (new-vel pt force)
+    (vec (+ (vec-x (particle-velocity pt))
+            (* (/ (vec-x force) (particle-mass pt)) timeslice))
+         (+ (vec-y (particle-velocity pt))
+            (* (/ (vec-y force) (particle-mass pt)) timeslice))))
+                   
+  (helper particles forces '()))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+
